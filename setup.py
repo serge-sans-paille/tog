@@ -1,4 +1,4 @@
-from distutils.core import setup
+from setuptools import setup
 
 setup(name='tog',
       version='0.1',
@@ -8,7 +8,7 @@ setup(name='tog',
       author_email='serge.guelton@telecom-bretagne.eu',
       url='https://github.com/serge-sans-paille/tog',
       license="BSD 3-Clause",
-      classifiers=['Development Status :: 5 - Alpha',
+      classifiers=['Development Status :: 2 - Pre-Alpha',
                    'Environment :: Console',
                    'Intended Audience :: Developers',
                    'License :: OSI Approved :: BSD License',

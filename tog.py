@@ -83,16 +83,19 @@ class Collection(TypeOperator):
         super(Collection, self).__init__("collection", [holder_type, key_type, value_type])
 
     def __str__(self):
-        if isinstance(self.types[0], ListCollection):
+        if isinstance(self.types[0], TypeVariable):
+            return '(collection {} -> {})'.format(self.types[1], self.types[2])
+        if isinstance(self.types[0].types[0], ListCollection):
             return '(list {})'.format(self.types[2])
-        if isinstance(self.types[0], SetCollection):
+        if isinstance(self.types[0].types[0], SetCollection):
             return '(set {})'.format(self.types[2])
-        if isinstance(self.types[0], DictCollection):
+        if isinstance(self.types[0].types[0], DictCollection):
             return '(dict {} -> {})'.format(self.types[1], self.types[2])
-        if isinstance(self.types[0], StrCollection):
+        if isinstance(self.types[0].types[0], StrCollection):
             return 'str'
-        assert isinstance(self.types[0], TypeVariable)
-        return '(collection {} -> {})'.format(self.types[1], self.types[2])
+        if isinstance(self.types[0].types[0], GenerableCollection):
+            return '(gen {})'.format(self.types[2])
+        assert False
 
 class ListCollection(TypeOperator):
     def __init__(self):
@@ -106,32 +109,44 @@ class DictCollection(TypeOperator):
 class StrCollection(TypeOperator):
     def __init__(self):
         super(StrCollection, self).__init__("str", [])
+class GenerableCollection(TypeOperator):
+    def __init__(self):
+        super(GenerableCollection, self).__init__("gen", [])
+
+LenTrait = TypeOperator("len", [])
+NoLenTrait = TypeOperator("no_len", [])
 
 class List(Collection):
 
     def __init__(self, of_type):
-        super(List, self).__init__(ListCollection(), Integer, of_type)
+        super(List, self).__init__(Traits([ListCollection(), LenTrait]), Integer, of_type)
 
 class Set(Collection):
 
     def __init__(self, of_type):
-        super(Set, self).__init__(SetCollection(), InvalidKey, of_type)
+        super(Set, self).__init__(Traits([SetCollection(), LenTrait]), InvalidKey, of_type)
 
 class Dict(Collection):
 
     def __init__(self, key_type, value_type):
-        super(Dict, self).__init__(DictCollection(), key_type, value_type)
+        super(Dict, self).__init__(Traits([DictCollection(), LenTrait]), key_type, value_type)
 
 class Str(Collection):
 
     def __init__(self, rec=True):
-        super(Str, self).__init__(StrCollection(), Integer, Str(rec=False) if rec else InvalidKey)
+        super(Str, self).__init__(Traits([StrCollection(), LenTrait]), Integer, Str(rec=False) if rec else InvalidKey)
 
+class Generator(Collection):
+
+    def __init__(self, of_type):
+        super(Generator, self).__init__(Traits([GenerableCollection(), NoLenTrait]), InvalidKey, of_type)
 
 class Tuple(TypeOperator):
 
     def __init__(self, of_types):
         super(Tuple, self).__init__("tuple", of_types)
+
+Traits = Tuple
 
 
 class Function(TypeOperator):
@@ -321,6 +336,14 @@ def analyse(node, env, non_generic=None):
         key_type = analyse(node.key, new_env, new_non_generic)
         value_type = analyse(node.value, new_env, new_non_generic)
         return Dict(key_type, value_type)
+    elif isinstance(node, gast.GeneratorExp):
+        # create new env, as in Python3
+        new_env = env.copy()
+        new_non_generic = non_generic.copy()
+        for generator in node.generators:
+            analyse(generator, new_env, new_non_generic)
+        elt_type = analyse(node.elt, new_env, new_non_generic)
+        return Generator(elt_type)
     elif isinstance(node, gast.comprehension):
         target_type = analyse(node.target, env, non_generic)
         iter_type = analyse(node.iter, env, non_generic)
@@ -514,6 +537,8 @@ def fresh(t, non_generic):
             return SetCollection()
         elif isinstance(p, DictCollection):
             return DictCollection()
+        elif isinstance(p, GenerableCollection):
+            return GenerableCollection()
         elif isinstance(p, Collection):
             return Collection(*[freshrec(x) for x in p.types])
         elif isinstance(p, TypeOperator):
@@ -1004,6 +1029,10 @@ class TestTypeInference(unittest.TestCase):
                    h: (fun int -> (fun int -> int))
                    ''')
 
+    def test_generatorexp(self):
+        self.check('def f(x, y): return (z + y for z in x)',
+                   "f: (fun (collection 'a -> 'b) -> 'b -> (gen 'b))"
+                  )
 
 
 if __name__ == '__main__':
