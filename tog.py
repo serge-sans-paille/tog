@@ -518,12 +518,6 @@ def fresh(t, non_generic):
             return Collection(*[freshrec(x) for x in p.types])
         elif isinstance(p, TypeOperator):
             return TypeOperator(p.name, [freshrec(x) for x in p.types])
-        elif isinstance(p, ZipFunction):
-            return ZipFunction()
-        elif isinstance(p, MapFunction):
-            return MapFunction()
-        elif isinstance(p, PartialFunction):
-            return PartialFunction()
         elif isinstance(p, UnionType):
             return UnionType([freshrec(x) for x in p.types])
         else:
@@ -703,59 +697,61 @@ def pp(env):
     for key, value in env.items():
         print(key, ':', value)
 
-class ZipFunction(UnionType):
+def make_zip_function(n):
+    candidates = []
+    for arity in range(n):
+       new_holder_types = [TypeVariable() for _ in range(arity)]
+       new_index_types = [TypeVariable() for _ in range(arity)]
+       new_value_types = [TypeVariable() for _ in range(arity)]
+       candidates.append(Function([Collection(h, i, v) for h, i, v in zip(new_holder_types, new_index_types, new_value_types)],
+                        List(Tuple(new_value_types))))
+    return UnionType(candidates)
 
-    def __init__(self):
-        candidates = []
-        for arity in range(4):
-           new_holder_types = [TypeVariable() for _ in range(arity)]
-           new_index_types = [TypeVariable() for _ in range(arity)]
-           new_value_types = [TypeVariable() for _ in range(arity)]
-           candidates.append(Function([Collection(h, i, v) for h, i, v in zip(new_holder_types, new_index_types, new_value_types)],
-                            List(Tuple(new_value_types))))
-        super(ZipFunction, self).__init__(candidates)
-
-class MapFunction(UnionType):
-
-    def __init__(self):
-        candidates = []
-        for arity in range(4):
-            f_arg_types0 = [TypeVariable() for _ in range(arity - 1)]
-            f_ret_type = TypeVariable()
-            arg_types0 = [Collection(TypeVariable(), TypeVariable(), f_arg_type) for f_arg_type in f_arg_types0]
-
-            f_arg_types1 = [TypeVariable() for _ in range(arity - 1)]
-            arg_types1 = [Collection(TypeVariable(), TypeVariable(), f_arg_type) for f_arg_type in f_arg_types1]
-            candidates.extend( [Function([Function(arg_types0, f_ret_type)] + arg_types0, List(f_ret_type)),
-                    Function([NoneType] + arg_types1, List(Tuple(f_arg_types1)))
-                   ])
-        super(MapFunction, self).__init__(candidates)
+ZipFunction = make_zip_function(4)
 
 
-class PartialFunction(UnionType):
 
-    def __init__(self):
-        candidates = []
-        for arity in range(4):
-            for nb_placeholders in range(arity):
-                f_args = [TypeVariable() for _ in range(arity)]
-                f_res = TypeVariable()
-                candidates.append(Function([Function(f_args, f_res)] + f_args[:nb_placeholders],
-                                           Function(f_args[nb_placeholders:], f_res)))
-        super(PartialFunction, self).__init__(candidates)
+def make_map_function(n):
+    candidates = []
+    for arity in range(n):
+        f_arg_types0 = [TypeVariable() for _ in range(arity - 1)]
+        f_ret_type = TypeVariable()
+        arg_types0 = [Collection(TypeVariable(), TypeVariable(), f_arg_type) for f_arg_type in f_arg_types0]
+
+        f_arg_types1 = [TypeVariable() for _ in range(arity - 1)]
+        arg_types1 = [Collection(TypeVariable(), TypeVariable(), f_arg_type) for f_arg_type in f_arg_types1]
+        candidates.extend( [Function([Function(arg_types0, f_ret_type)] + arg_types0, List(f_ret_type)),
+                Function([NoneType] + arg_types1, List(Tuple(f_arg_types1)))
+               ])
+    return UnionType(candidates)
+
+MapFunction = make_map_function(4)
+
+
+def make_partial_function(n):
+    candidates = []
+    for arity in range(n):
+        for nb_placeholders in range(arity):
+            f_args = [TypeVariable() for _ in range(arity)]
+            f_res = TypeVariable()
+            candidates.append(Function([Function(f_args, f_res)] + f_args[:nb_placeholders],
+                                       Function(f_args[nb_placeholders:], f_res)))
+    return UnionType(candidates)
+
+PartialFunction = make_partial_function(4)
 
 
 builtins = {
     'len': Function([Collection(TypeVariable(), TypeVariable(), TypeVariable())], Integer),
-    'zip': ZipFunction(),
-    'map': MapFunction(),
+    'zip': ZipFunction,
+    'map': MapFunction,
     'None': NoneType,
     'print': UnionType([Function([TypeVariable() for _ in range(i)], NoneType) for i in range(5)]),
 }
 
 Modules = {
     'functools': {
-        'partial': PartialFunction(),
+        'partial': PartialFunction,
     },
     'math': {
         'cos': Function([Float], Float),
