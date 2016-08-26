@@ -532,10 +532,10 @@ def analyse(node, env, non_generic=None):
         if(node.name):
             new_type = ExceptionType
             non_generic.add(new_type)
-            if node.name.id in env:
-                unify(env[node.name.id], new_type)
+            if node.name in env:
+                unify(env[node.name], new_type)
             else:
-                env[node.name.id] = new_type
+                env[node.name] = new_type
         analyse_body(node.body, env, non_generic)
         return env
     raise RuntimeError("Unhandled syntax node {0}".format(type(node)))
