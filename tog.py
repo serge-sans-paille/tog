@@ -197,6 +197,19 @@ def analyse_body(body, env, non_generic):
     for stmt in body:
         analyse(stmt, env, non_generic)
 
+class HasYield(gast.NodeVisitor):
+
+    def __init__(self):
+        super(HasYield, self).__init__()
+        self.has_yield = False
+
+    def visit_FunctionDef(self, node):
+        pass
+
+    def visit_Yield(self, node):
+        self.has_yield = True
+
+
 def analyse(node, env, non_generic=None):
     """Computes the type of the expression given by node.
 
@@ -383,7 +396,13 @@ def analyse(node, env, non_generic=None):
         new_non_generic = non_generic.copy()
 
         # reset return special variables
-        new_env.pop('@', None)
+        new_env.pop('@ret', None)
+        new_env.pop('@gen', None)
+
+        hy = HasYield()
+        for stmt in node.body:
+            hy.visit(stmt)
+        new_env['@gen'] = hy.has_yield
 
         arg_types = []
         for arg in node.args.args:
@@ -395,7 +414,10 @@ def analyse(node, env, non_generic=None):
         analyse_body(node.body, new_env, new_non_generic)
 
         # TODO: need a CFG analyse here to check if we need to add a return None
-        result_type = new_env.get('@', NoneType)
+        result_type = new_env.get('@ret', NoneType)
+
+        if new_env['@gen']:
+            result_type = Generator(result_type)
 
         ftype = Function(arg_types, result_type)
         unify(old_type, ftype)
@@ -432,15 +454,29 @@ def analyse(node, env, non_generic=None):
         unify(target_type, defn_type)
         return env
     elif isinstance(node, gast.Return):
+        if env['@gen']:
+            return env
+
         if node.value is None:
             ret_type = NoneType
         else:
             ret_type = analyse(node.value, env, non_generic)
 
-        if '@' in env:
-            env['@'] = merge_type(env['@'], ret_type)
+        if '@ret' in env:
+            env['@ret'] = merge_type(env['@ret'], ret_type)
         else:
-            env['@'] = ret_type
+            env['@ret'] = ret_type
+        return env
+    elif isinstance(node, gast.Yield):
+        assert env['@gen']
+        assert node.value is not None
+
+        ret_type = analyse(node.value, env, non_generic)
+
+        if '@ret' in env:
+            env['@ret'] = merge_type(env['@ret'], ret_type)
+        else:
+            env['@ret'] = ret_type
         return env
     elif isinstance(node, gast.For):
         iter_type = analyse(node.iter, env, non_generic)
@@ -1032,6 +1068,11 @@ class TestTypeInference(unittest.TestCase):
     def test_generatorexp(self):
         self.check('def f(x, y): return (z + y for z in x)',
                    "f: (fun (collection 'a -> 'b) -> 'b -> (gen 'b))"
+                  )
+
+    def test_generator(self):
+        self.check('def f(x): yield x ; return',
+                   "f: (fun 'a -> (gen 'a))"
                   )
 
 
