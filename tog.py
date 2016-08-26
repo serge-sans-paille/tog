@@ -1,4 +1,4 @@
-#original code from http://smallshire.org.uk/sufficientlysmall/2010/04/11/a-hindley-milner-type-inference-implementation-in-python/ 
+#original code from http://smallshire.org.uk/sufficientlysmall/2010/04/11/a-hindley-milner-type-inference-implementation-in-python/
 from __future__ import print_function
 import gast
 import itertools
@@ -140,6 +140,8 @@ class Generator(Collection):
 
     def __init__(self, of_type):
         super(Generator, self).__init__(Traits([GenerableCollection(), NoLenTrait]), InvalidKey, of_type)
+
+ExceptionType = TypeOperator("exception", [])
 
 class Tuple(TypeOperator):
 
@@ -518,6 +520,23 @@ def analyse(node, env, non_generic=None):
         analyse(node.test, env, non_generic)
         analyse_body(node.body, env, non_generic)
         analyse_body(node.orelse, env, non_generic)
+        return env
+    elif isinstance(node, gast.Try):
+        analyse_body(node.body, env, non_generic)
+        for handler in node.handlers:
+            analyse(handler, env, non_generic)
+        analyse_body(node.orelse, env, non_generic)
+        analyse_body(node.finalbody, env, non_generic)
+        return env
+    elif isinstance(node, gast.ExceptHandler):
+        if(node.name):
+            new_type = ExceptionType
+            non_generic.add(new_type)
+            if node.name.id in env:
+                unify(env[node.name.id], new_type)
+            else:
+                env[node.name.id] = new_type
+        analyse_body(node.body, env, non_generic)
         return env
     raise RuntimeError("Unhandled syntax node {0}".format(type(node)))
 
@@ -1074,6 +1093,72 @@ class TestTypeInference(unittest.TestCase):
         self.check('def f(x): yield x ; return',
                    "f: (fun 'a -> (gen 'a))"
                   )
+
+    def test_except(self):
+        self.check("""
+                   def f(x, y):
+                       try:
+                           return y
+                       except RuntimeError:
+                           return x
+                   """,
+                   "f: (fun 'a -> 'a -> 'a)")
+
+    def test_multi_except(self):
+        self.check("""
+                   def f(x, y):
+                       try:
+                           return y
+                       except RuntimeError:
+                           return x
+                       except:
+                           return 4
+                   """,
+                   "f: (fun int -> int -> int)")
+
+    def test_except_orelse(self):
+        self.check("""
+                   def f(x, y):
+                       try:
+                           return y
+                       except RuntimeError:
+                           return x
+                       else:
+                           return 4
+                   """,
+                   "f: (fun int -> int -> int)")
+
+    def test_except_finally(self):
+        self.check("""
+                   def f(x, y):
+                       try:
+                           return y
+                       except RuntimeError:
+                           return x
+                       finally:
+                           return 4.
+                   """,
+                   "f: (fun float -> float -> float)")
+
+    def test_except_def_name(self):
+        self.check("""
+                   def f(x, y):
+                       try:
+                           return y
+                       except RuntimeError as e:
+                           return e
+                   """,
+                   "f: (fun 'a -> exception -> exception)")
+
+    def test_except_redef_name(self):
+        self.check("""
+                   def f(e, y):
+                       try:
+                           return y
+                       except RuntimeError as e:
+                           return 1
+                   """,
+                   "f: (fun exception -> int -> int)")
 
 
 if __name__ == '__main__':
