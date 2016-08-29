@@ -93,6 +93,15 @@ class Collection(TypeOperator):
             return '(dict {} -> {})'.format(self.types[1], self.types[2])
         if isinstance(self.types[0].types[0], StrCollection):
             return 'str'
+        if isinstance(self.types[0].types[0], ArrayCollection):
+            def rec(n):
+                if isinstance(n.types[2], Collection):
+                    t, n = rec(n.types[2])
+                    return t, n + 1
+                else:
+                    return n.types[2], 1
+            t, n = rec(self)
+            return 'array {} -> {}'.format(t, n)
         if isinstance(self.types[0].types[0], GenerableCollection):
             return '(gen {})'.format(self.types[2])
         assert False
@@ -109,6 +118,9 @@ class DictCollection(TypeOperator):
 class StrCollection(TypeOperator):
     def __init__(self):
         super(StrCollection, self).__init__("str", [])
+class ArrayCollection(TypeOperator):
+    def __init__(self):
+        super(ArrayCollection, self).__init__("array", [])
 class GenerableCollection(TypeOperator):
     def __init__(self):
         super(GenerableCollection, self).__init__("gen", [])
@@ -135,6 +147,11 @@ class Str(Collection):
 
     def __init__(self, rec=True):
         super(Str, self).__init__(Traits([StrCollection(), LenTrait]), Integer, Str(rec=False) if rec else InvalidKey)
+
+class Array(Collection):
+
+    def __init__(self, of_type, dim):
+        super(Array, self).__init__(Traits([ArrayCollection(), LenTrait]), Integer, Array(of_type, dim - 1) if dim > 1 else of_type)
 
 class Generator(Collection):
 
@@ -379,7 +396,22 @@ def analyse(node, env, non_generic=None):
         else:
             raise NotImplementedError()
         return new_type
+    elif isinstance(node, gast.Attribute):
+        value_type = analyse(node.value, env, non_generic)
+        if isinstance(value_type, dict):  # that's an import
+            return value_type[node.attr]
+        raise NotImplementedError()
     # stmt
+    elif isinstance(node, gast.Import):
+        for alias in node.names:
+            if alias.name not in Modules:
+                raise NotImplementedError("unknown module: %s " % alias.name)
+            if alias.asname is None:
+                target = alias.name
+            else:
+                target = alias.asname
+            env[target] = Modules[alias.name]
+        return env
     elif isinstance(node, gast.ImportFrom):
         if node.module not in Modules:
             raise NotImplementedError("unknown module: %s" % node.module)
@@ -582,6 +614,8 @@ def fresh(t, non_generic):
                 return mappings[p]
             else:
                 return p
+        elif isinstance(p, dict):
+            return p  # module
         elif isinstance(p, NoneOperator):
             return p  # FIXME
         elif isinstance(p, StrCollection):
@@ -594,6 +628,8 @@ def fresh(t, non_generic):
             return DictCollection()
         elif isinstance(p, GenerableCollection):
             return GenerableCollection()
+        elif isinstance(p, ArrayCollection):
+            return ArrayCollection()
         elif isinstance(p, Collection):
             return Collection(*[freshrec(x) for x in p.types])
         elif isinstance(p, TypeOperator):
@@ -820,6 +856,25 @@ def make_partial_function(n):
 
 PartialFunction = make_partial_function(4)
 
+def make_numpy_ones(n):
+    candidates = []
+    # with an integer as shape
+    candidates.append(Function([Integer], Array(Float, 1)))
+    dtype_from = TypeVariable()
+    dtype = TypeVariable()
+    candidates.append(Function([Integer, Function([dtype_from], dtype)], Array(dtype, 1)))
+
+    for i in range(1, n):
+        candidates.append(Function([Tuple([Integer for _ in range(i)])], Array(Float, i)))
+
+        dtype_from = TypeVariable()
+        dtype = TypeVariable()
+        candidates.append(Function([Tuple([Integer for _ in range(i)]), Function([dtype_from], dtype)], Array(dtype, i)))
+
+    return UnionType(candidates)
+
+OnesFunction = make_numpy_ones(4)
+
 
 builtins = {
     'len': Function([Collection(TypeVariable(), TypeVariable(), TypeVariable())], Integer),
@@ -827,6 +882,7 @@ builtins = {
     'map': MapFunction,
     'None': NoneType,
     'print': UnionType([Function([TypeVariable() for _ in range(i)], NoneType) for i in range(5)]),
+    'int': Function([TypeVariable()], Integer),
 }
 
 Modules = {
@@ -836,6 +892,9 @@ Modules = {
     'math': {
         'cos': Function([Float], Float),
         'sin': Function([Float], Float),
+    },
+    'numpy': {
+        'ones': OnesFunction ,
     },
 }
 
@@ -1159,6 +1218,22 @@ class TestTypeInference(unittest.TestCase):
                            return 1
                    """,
                    "f: (fun exception -> int -> int)")
+
+    def test_numpy_ones(self):
+        self.check("""
+                   def f(x):
+                       import numpy as np
+                       return np.ones((x,))
+                   """,
+                   "f: (fun int -> array float -> 1)")
+
+    def test_numpy_ones_dtype(self):
+        self.check("""
+                   def f(x):
+                       import numpy as np
+                       return np.ones((x, x), int)
+                   """,
+                   "f: (fun int -> array int -> 2)")
 
 
 if __name__ == '__main__':
