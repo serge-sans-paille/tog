@@ -400,7 +400,14 @@ def analyse(node, env, non_generic=None):
         value_type = analyse(node.value, env, non_generic)
         if isinstance(value_type, dict):  # that's an import
             return value_type[node.attr]
-        raise NotImplementedError()
+        elif node.attr in Attrs:
+            result_type = TypeVariable()
+            self_type = value_type
+            args_type = [TypeVariable() for _ in range(len(Attrs[node.attr].types) - 2)]
+            ft = Function([value_type] + args_type, result_type)
+            unify(ft, Attrs[node.attr])
+            return Function(args_type, result_type)
+        raise NotImplementedError("Unknown attribute: %s" % node.attr)
     # stmt
     elif isinstance(node, gast.Import):
         for alias in node.names:
@@ -875,6 +882,9 @@ def make_numpy_ones(n):
 
 OnesFunction = make_numpy_ones(4)
 
+def make_list_append():
+    tv = TypeVariable()
+    return Function([List(tv), tv], NoneType)
 
 builtins = {
     'len': Function([Collection(TypeVariable(), TypeVariable(), TypeVariable())], Integer),
@@ -883,6 +893,9 @@ builtins = {
     'None': NoneType,
     'print': UnionType([Function([TypeVariable() for _ in range(i)], NoneType) for i in range(5)]),
     'int': Function([TypeVariable()], Integer),
+}
+Attrs = {
+    'append': make_list_append(),
 }
 
 Modules = {
@@ -1218,6 +1231,10 @@ class TestTypeInference(unittest.TestCase):
                            return 1
                    """,
                    "f: (fun exception -> int -> int)")
+
+    def test_list_append(self):
+        self.check('def f(x, y): x.append(y)',
+                   "f: (fun (list 'a) -> 'a -> none)")
 
     def test_numpy_ones(self):
         self.check("""
