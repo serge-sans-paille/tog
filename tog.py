@@ -402,7 +402,6 @@ def analyse(node, env, non_generic=None):
             return value_type[node.attr]
         elif node.attr in Attrs:
             result_type = TypeVariable()
-            self_type = value_type
             args_type = [TypeVariable() for _ in range(len(Attrs[node.attr].types) - 2)]
             ft = Function([value_type] + args_type, result_type)
             unify(ft, Attrs[node.attr])
@@ -576,6 +575,11 @@ def analyse(node, env, non_generic=None):
             else:
                 env[node.name.id] = new_type
         analyse_body(node.body, env, non_generic)
+        return env
+    elif isinstance(node, gast.Assert):
+        if node.msg:
+            analyse(node.msg, env, non_generic)
+        analyse(node.test, env, non_generic)
         return env
     raise RuntimeError("Unhandled syntax node {0}".format(type(node)))
 
@@ -1251,6 +1255,14 @@ class TestTypeInference(unittest.TestCase):
                        return np.ones((x, x), int)
                    """,
                    "f: (fun int -> array int -> 2)")
+
+    def test_assert(self):
+        self.check("""
+                   def f(x):
+                       assert(x, x)
+                   """,
+                   "f: (fun 'a -> none)")
+
 
 
 if __name__ == '__main__':
