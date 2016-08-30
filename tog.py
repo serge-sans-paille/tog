@@ -276,6 +276,17 @@ def analyse(node, env, non_generic=None):
             raise NotImplementedError
     elif isinstance(node, gast.Str):
         return Str()
+    elif isinstance(node, gast.Compare):
+        left_type = analyse(node.left, env, non_generic)
+        comparators_type = [analyse(comparator, env, non_generic)
+                            for comparator in node.comparators]
+        ops_type = [analyse(op, env, non_generic)
+                    for op in node.ops]
+        prev_type = left_type
+        for op_type, comparator_type in zip(ops_type, comparators_type):
+            unify(Function([prev_type, comparator_type], TypeVariable()),
+                  op_type)
+        return Bool
     elif isinstance(node, gast.Call):
         fun_type = analyse(node.func, env, non_generic)
         arg_types = [analyse(arg, env, non_generic) for arg in node.args]
@@ -296,6 +307,8 @@ def analyse(node, env, non_generic=None):
         result_type = analyse(node.body, new_env, new_non_generic)
         return Function(arg_types, result_type)
     elif isinstance(node, gast.IfExp):
+        test_type = analyse(node.test, env, non_generic)
+        unify(Function([test_type], Bool), builtins['bool'])
         body_type = analyse(node.body, env, non_generic)
         orelse_type = analyse(node.orelse, env, non_generic)
         return merge_type(body_type, orelse_type)
@@ -309,6 +322,9 @@ def analyse(node, env, non_generic=None):
     elif isinstance(node, gast.Sub):
         var = TypeVariable()
         return Function([var, var], var)
+    elif isinstance(node, gast.Gt):
+        var = TypeVariable()
+        return Function([var, var], Bool)
     elif isinstance(node, gast.Add):
         var = TypeVariable()
         return Function([var, var], var)
@@ -527,6 +543,7 @@ def analyse(node, env, non_generic=None):
         return env
     elif isinstance(node, gast.If):
         test_type = analyse(node.test, env, non_generic)
+        unify(Function([test_type], Bool), builtins['bool'])
 
         body_env = env.copy()
         body_non_generic = non_generic.copy()
@@ -555,7 +572,9 @@ def analyse(node, env, non_generic=None):
 
         return env
     elif isinstance(node, gast.While):
-        analyse(node.test, env, non_generic)
+        test_type = analyse(node.test, env, non_generic)
+        unify(Function([test_type], Bool), builtins['bool'])
+
         analyse_body(node.body, env, non_generic)
         analyse_body(node.orelse, env, non_generic)
         return env
@@ -897,6 +916,12 @@ builtins = {
     'None': NoneType,
     'print': UnionType([Function([TypeVariable() for _ in range(i)], NoneType) for i in range(5)]),
     'int': Function([TypeVariable()], Integer),
+    'bool': UnionType([
+        Function([Integer], Bool),
+        Function([Bool], Bool),
+        Function([Float], Bool),
+        Function([Collection(Traits([TypeVariable(), LenTrait]),TypeVariable(), TypeVariable())], Bool),
+    ]),
 }
 Attrs = {
     'append': make_list_append(),
