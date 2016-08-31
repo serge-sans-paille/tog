@@ -85,15 +85,17 @@ class Collection(TypeOperator):
     def __str__(self):
         if isinstance(self.types[0], TypeVariable):
             return '(collection {} -> {})'.format(self.types[1], self.types[2])
-        if isinstance(self.types[0].types[0], ListCollection):
+        assert isinstance(self.types[0].types[0], TypeOperator)
+        type_trait = self.types[0].types[0].name
+        if type_trait == 'list':
             return '(list {})'.format(self.types[2])
-        if isinstance(self.types[0].types[0], SetCollection):
+        if type_trait == 'set':
             return '(set {})'.format(self.types[2])
-        if isinstance(self.types[0].types[0], DictCollection):
+        if type_trait == 'dict':
             return '(dict {} -> {})'.format(self.types[1], self.types[2])
-        if isinstance(self.types[0].types[0], StrCollection):
+        if type_trait == 'str':
             return 'str'
-        if isinstance(self.types[0].types[0], ArrayCollection):
+        if type_trait == 'array':
             def rec(n):
                 if isinstance(n.types[2], Collection):
                     t, n = rec(n.types[2])
@@ -102,81 +104,50 @@ class Collection(TypeOperator):
                     return n.types[2], 1
             t, n = rec(self)
             return 'array {} -> {}'.format(t, n)
-        if isinstance(self.types[0].types[0], GenerableCollection):
+        if type_trait == 'gen':
             return '(gen {})'.format(self.types[2])
         assert False
 
-class ListCollection(TypeOperator):
-    def __init__(self):
-        super(ListCollection, self).__init__("list", [])
-class SetCollection(TypeOperator):
-    def __init__(self):
-        super(SetCollection, self).__init__("set", [])
-class DictCollection(TypeOperator):
-    def __init__(self):
-        super(DictCollection, self).__init__("dict", [])
-class StrCollection(TypeOperator):
-    def __init__(self):
-        super(StrCollection, self).__init__("str", [])
-class ArrayCollection(TypeOperator):
-    def __init__(self):
-        super(ArrayCollection, self).__init__("array", [])
-class GenerableCollection(TypeOperator):
-    def __init__(self):
-        super(GenerableCollection, self).__init__("gen", [])
+ListTrait = TypeOperator('list', [])
+SetTrait = TypeOperator('set', [])
+DictTrait = TypeOperator('dict', [])
+StrTrait = TypeOperator('str', [])
+ArrayTrait = TypeOperator('array', [])
+GenerableTrait = TypeOperator('gen', [])
 
 LenTrait = TypeOperator("len", [])
 NoLenTrait = TypeOperator("no_len", [])
 
-class List(Collection):
+def List(of_type):
+    return Collection(Traits([ListTrait, LenTrait]), Integer, of_type)
 
-    def __init__(self, of_type):
-        super(List, self).__init__(Traits([ListCollection(), LenTrait]), Integer, of_type)
+def Set(of_type):
+    return Collection(Traits([SetTrait, LenTrait]), InvalidKey, of_type)
 
-class Set(Collection):
+def Dict(key_type, value_type):
+    return Collection(Traits([DictTrait, LenTrait]), key_type, value_type)
 
-    def __init__(self, of_type):
-        super(Set, self).__init__(Traits([SetCollection(), LenTrait]), InvalidKey, of_type)
+def Str(rec=True):
+    return Collection(Traits([StrTrait, LenTrait]), Integer, Str(rec=False) if rec else InvalidKey)
 
-class Dict(Collection):
+def Array(of_type, dim):
+    return Collection(Traits([ArrayTrait, LenTrait]), Integer, Array(of_type, dim - 1) if dim > 1 else of_type)
 
-    def __init__(self, key_type, value_type):
-        super(Dict, self).__init__(Traits([DictCollection(), LenTrait]), key_type, value_type)
+def Generator(of_type):
+    return Collection(Traits([GenerableTrait, NoLenTrait]), InvalidKey, of_type)
 
-class Str(Collection):
 
-    def __init__(self, rec=True):
-        super(Str, self).__init__(Traits([StrCollection(), LenTrait]), Integer, Str(rec=False) if rec else InvalidKey)
-
-class Array(Collection):
-
-    def __init__(self, of_type, dim):
-        super(Array, self).__init__(Traits([ArrayCollection(), LenTrait]), Integer, Array(of_type, dim - 1) if dim > 1 else of_type)
-
-class Generator(Collection):
-
-    def __init__(self, of_type):
-        super(Generator, self).__init__(Traits([GenerableCollection(), NoLenTrait]), InvalidKey, of_type)
-
-ExceptionType = TypeOperator("exception", [])
-
-class Tuple(TypeOperator):
-
-    def __init__(self, of_types):
-        super(Tuple, self).__init__("tuple", of_types)
+def Tuple(of_types):
+    return TypeOperator("tuple", of_types)
 
 Traits = Tuple
 
+ExceptionType = TypeOperator("exception", [])
 
-class Function(TypeOperator):
+def Function(from_types, to_type):
     """A binary type constructor which builds function types"""
+    return TypeOperator('fun', list(from_types) + [to_type])
 
-    def __init__(self, from_types, to_type):
-        super(Function, self).__init__('fun', list(from_types) + [to_type])
-
-    @property
-    def arity(self):
-        return len(self.types) - 1
 
 class UnionType(object):
     """A binary type constructor which builds function types"""
@@ -186,6 +157,15 @@ class UnionType(object):
 
     def __str__(self):
         return '(' + ' | '.join(sorted(map(str, self.types))) + ')'
+
+class MultiType(object):
+    """A binary type constructor which builds function types"""
+
+    def __init__(self, types):
+        self.types = types
+
+    def __str__(self):
+        return '(' + ' ; '.join(sorted(map(str, self.types))) + ')'
 
 class NoneOperator(TypeOperator):
 
@@ -330,7 +310,7 @@ def analyse(node, env, non_generic=None):
         return Function([var, var], var)
     elif isinstance(node, gast.Mult):
         var = TypeVariable()
-        return UnionType([
+        return MultiType([
             Function([Integer, Integer], Integer),
             Function([Float, Float], Float),
         ]
@@ -648,24 +628,14 @@ def fresh(t, non_generic):
             return p  # module
         elif isinstance(p, NoneOperator):
             return p  # FIXME
-        elif isinstance(p, StrCollection):
-            return StrCollection()
-        elif isinstance(p, ListCollection):
-            return ListCollection()
-        elif isinstance(p, SetCollection):
-            return SetCollection()
-        elif isinstance(p, DictCollection):
-            return DictCollection()
-        elif isinstance(p, GenerableCollection):
-            return GenerableCollection()
-        elif isinstance(p, ArrayCollection):
-            return ArrayCollection()
         elif isinstance(p, Collection):
             return Collection(*[freshrec(x) for x in p.types])
         elif isinstance(p, TypeOperator):
             return TypeOperator(p.name, [freshrec(x) for x in p.types])
         elif isinstance(p, UnionType):
             return UnionType([freshrec(x) for x in p.types])
+        elif isinstance(p, MultiType):
+            return MultiType([freshrec(x) for x in p.types])
         else:
             assert False, "missing freshrec case {}".format(type(p))
 
@@ -709,9 +679,29 @@ def unify(t1, t2):
             raise InferenceError("Type mismatch: {0} != {1}".format(str(a), str(b)))
         for p, q in zip(a.types, b.types):
             unify(p, q)
+    elif isinstance(a, MultiType) and isinstance(b, MultiType):
+        if len(a.types) != len(b.types):
+            raise InferenceError("Type mismatch: {0} != {1}".format(str(a), str(b)))
+        for p, q in zip(a.types, b.types):
+            unify(p, q)
     elif isinstance(b, UnionType):
         return unify(b, a)
     elif isinstance(a, UnionType):
+        for t in a.types:
+            try:
+                t_clone = fresh(t, {})
+                b_clone = fresh(b, {})
+                unify(t_clone, b_clone)
+            except InferenceError as e:
+                pass
+            else:
+                t_clone = fresh(t, {})
+                unify(t_clone, b)
+                return
+        raise RuntimeError("Not unified {} and {}, no overload found".format(type(a), type(b)))
+    elif isinstance(b, MultiType):
+        return unify(b, a)
+    elif isinstance(a, MultiType):
         for t in a.types:
             try:
                 t_clone = fresh(t, {})
@@ -851,7 +841,7 @@ def make_zip_function(n):
        new_value_types = [TypeVariable() for _ in range(arity)]
        candidates.append(Function([Collection(h, i, v) for h, i, v in zip(new_holder_types, new_index_types, new_value_types)],
                         List(Tuple(new_value_types))))
-    return UnionType(candidates)
+    return MultiType(candidates)
 
 ZipFunction = make_zip_function(4)
 
@@ -869,7 +859,7 @@ def make_map_function(n):
         candidates.extend( [Function([Function(arg_types0, f_ret_type)] + arg_types0, List(f_ret_type)),
                 Function([NoneType] + arg_types1, List(Tuple(f_arg_types1)))
                ])
-    return UnionType(candidates)
+    return MultiType(candidates)
 
 MapFunction = make_map_function(4)
 
@@ -882,7 +872,7 @@ def make_partial_function(n):
             f_res = TypeVariable()
             candidates.append(Function([Function(f_args, f_res)] + f_args[:nb_placeholders],
                                        Function(f_args[nb_placeholders:], f_res)))
-    return UnionType(candidates)
+    return MultiType(candidates)
 
 PartialFunction = make_partial_function(4)
 
@@ -901,7 +891,7 @@ def make_numpy_ones(n):
         dtype = TypeVariable()
         candidates.append(Function([Tuple([Integer for _ in range(i)]), Function([dtype_from], dtype)], Array(dtype, i)))
 
-    return UnionType(candidates)
+    return MultiType(candidates)
 
 OnesFunction = make_numpy_ones(4)
 
@@ -914,9 +904,9 @@ builtins = {
     'zip': ZipFunction,
     'map': MapFunction,
     'None': NoneType,
-    'print': UnionType([Function([TypeVariable() for _ in range(i)], NoneType) for i in range(5)]),
+    'print': MultiType([Function([TypeVariable() for _ in range(i)], NoneType) for i in range(5)]),
     'int': Function([TypeVariable()], Integer),
-    'bool': UnionType([
+    'bool': MultiType([
         Function([Integer], Bool),
         Function([Bool], Bool),
         Function([Float], Bool),
