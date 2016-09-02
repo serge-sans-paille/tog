@@ -167,18 +167,15 @@ class MultiType(object):
     def __str__(self):
         return '(' + ' ; '.join(sorted(map(str, self.types))) + ')'
 
-class NoneOperator(TypeOperator):
-
-    def __init__(self):
-        super(NoneOperator, self).__init__('none', [])
-
 # Basic types are constructed with a nullary type constructor
 Integer = TypeOperator("int", [])  # Basic integer
 Float = TypeOperator("float", [])  # Double precision float
 Bool = TypeOperator("bool", [])  # Basic bool
 InvalidKey = TypeOperator("invalid-key", [])  # invalid key - for non-indexable collection
-NoneType = NoneOperator()
+NoneType = TypeOperator("none", [])
 
+def is_none(t):
+    return isinstance(t, TypeOperator) and t.name == 'none'
 
 ####
 
@@ -626,7 +623,7 @@ def fresh(t, non_generic):
                 return p
         elif isinstance(p, dict):
             return p  # module
-        elif isinstance(p, NoneOperator):
+        elif is_none(p):
             return p  # FIXME
         elif isinstance(p, Collection):
             return Collection(*[freshrec(x) for x in p.types])
@@ -721,16 +718,16 @@ def merge_type(t1, t2):
     '''
     Similar to unify, but handles option types
     '''
-    if isinstance(t1, TypeVariable) and isinstance(t2, NoneOperator):
+    if isinstance(t1, TypeVariable) and is_none(t2):
         t = UnionType(t1, t2)
         unify(t, t1)
         unify(t, t2)
         return t
 
-    if isinstance(t2, TypeVariable) and isinstance(t1, NoneOperator):
+    if isinstance(t2, TypeVariable) and is_none(t1):
         return merge_type(t2, t1)
 
-    if isinstance(t1, NoneOperator) and isinstance(t2, NoneOperator):
+    if is_none(t1) and is_none(t2):
         return t1
 
     unify(t1, t2)
