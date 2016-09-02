@@ -668,20 +668,20 @@ def unify(t1, t2):
         unify(b, a)
     elif isinstance(a, TypeOperator) and isinstance(b, TypeOperator):
         if len(a.types) != len(b.types):
-            raise InferenceError("Type mismatch: {0} != {1}".format(str(a), str(b)))
+            raise InferenceError("Type mismatch: {0} != {1}".format(type(a), type(b)))
         else:
             if a.name != b.name:
-                raise InferenceError("Type mismatch: {0} != {1}".format(str(a), str(b)))
+                raise InferenceError("Type mismatch: {0} != {1}".format(type(a), type(b)))
         for p, q in zip(a.types, b.types):
             unify(p, q)
     elif isinstance(a, UnionType) and isinstance(b, UnionType):
         if len(a.types) != len(b.types):
-            raise InferenceError("Type mismatch: {0} != {1}".format(str(a), str(b)))
+            raise InferenceError("Type mismatch: {0} != {1}".format(type(a), type(b)))
         for p, q in zip(a.types, b.types):
             unify(p, q)
     elif isinstance(a, MultiType) and isinstance(b, MultiType):
         if len(a.types) != len(b.types):
-            raise InferenceError("Type mismatch: {0} != {1}".format(str(a), str(b)))
+            raise InferenceError("Type mismatch: {0} != {1}".format(type(a), type(b)))
         for p, q in zip(a.types, b.types):
             unify(p, q)
     elif isinstance(b, UnionType):
@@ -1137,15 +1137,15 @@ class TestTypeInference(unittest.TestCase):
 
     def test_zip(self):
         self.check('def f(x, y): return zip(x, y)',
-                   "f: (fun (collection 'o -> 'p) -> (collection 'q -> 'r) -> (list (tuple 'p -> 'r)))")
+                   "f: (fun (collection 'a -> 'b) -> (collection 'c -> 'd) -> (list (tuple 'b -> 'd)))")
 
     def test_map(self):
         self.check('def f(x, y): return map(None, x, y), map(len, x)',
-                   "f: (fun (collection 'y -> 'z) -> (collection 'a -> 'b) -> (tuple (list (tuple 'z -> 'b)) -> (list int)))")
+                   "f: (fun (collection 'a -> 'b) -> (collection 'c -> 'd) -> (tuple (list (tuple 'b -> 'd)) -> (list int)))")
 
     def test_union_type(self):
         self.check('def f(x, y): return map(x, y)',
-                   "f: (fun (fun (collection 'm -> 'n) -> 'o) -> (collection 'm -> 'n) -> (list 'o))")
+                   "f: (fun (fun (collection 'a -> 'b) -> 'c) -> (collection 'a -> 'b) -> (list 'c))")
 
     def test_import_from(self):
         self.check('''
@@ -1170,7 +1170,7 @@ class TestTypeInference(unittest.TestCase):
                         return foo
                    ''',
                    '''
-                   f: (fun 'k -> 'k -> 'k -> 'k)
+                   f: (fun 'a -> 'a -> 'a -> 'a)
                    g: (fun int -> (fun int -> int))
                    h: (fun int -> (fun int -> int))
                    ''')
