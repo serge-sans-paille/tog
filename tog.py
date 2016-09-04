@@ -299,9 +299,13 @@ def analyse(node, env, non_generic=None):
     elif isinstance(node, gast.Sub):
         var = TypeVariable()
         return Function([var, var], var)
-    elif isinstance(node, gast.Gt):
+    elif isinstance(node, (gast.Eq, gast.NotEq, gast.Lt, gast.LtE, gast.Gt,
+                           gast.GtE, gast.Is, gast.IsNot)):
         var = TypeVariable()
         return Function([var, var], Bool)
+    elif isinstance(node, (gast.In, gast.NotIn)):
+        var = TypeVariable()
+        return Function([var, Collection(TypeVariable(), TypeVariable(), var)], Bool)
     elif isinstance(node, gast.Add):
         var = TypeVariable()
         return Function([var, var], var)
@@ -909,6 +913,7 @@ builtins = {
         Function([Float], Bool),
         Function([Collection(Traits([TypeVariable(), LenTrait]),TypeVariable(), TypeVariable())], Bool),
     ]),
+    'True': Bool,
 }
 Attrs = {
     'append': make_list_append(),
@@ -1274,6 +1279,23 @@ class TestTypeInference(unittest.TestCase):
                        assert(x, x)
                    """,
                    "f: (fun 'a -> none)")
+
+    def test_compare(self):
+        self.check(
+            """
+                def f(x, l):
+                    if 2 <= x < 6:
+                        return x, x == 3
+                    elif 2 > x >= 0:
+                        return x, x is 5
+                    elif x in l:
+                        return x, x is not 6
+                    elif x not in l:
+                        return x, x is not 6
+                    else:
+                        return x, x != 4
+            """,
+            "f: (fun int -> (collection 'a -> int) -> (tuple int -> bool))")
 
 
 
