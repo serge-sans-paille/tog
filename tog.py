@@ -581,6 +581,21 @@ def analyse(node, env, non_generic=None):
             analyse(node.msg, env, non_generic)
         analyse(node.test, env, non_generic)
         return env
+    elif isinstance(node, gast.UnaryOp):
+        operand_type = analyse(node.operand, env, non_generic)
+        return_type = TypeVariable()
+        op_type = analyse(node.op, env, non_generic)
+        unify(Function([operand_type], return_type), op_type)
+        return return_type
+    elif isinstance(node, gast.Invert):
+        return MultiType([Function([Bool], Integer),
+                          Function([Integer], Integer)])
+    elif isinstance(node, gast.Not):
+        return builtins['bool']
+    elif isinstance(node, (gast.UAdd, gast.USub)):
+        return MultiType([Function([Float], Float), Function([Integer], Float),
+                          Function([Bool], Bool)])
+
     raise RuntimeError("Unhandled syntax node {0}".format(type(node)))
 
 def get_type(name, env, non_generic):
@@ -1296,6 +1311,15 @@ class TestTypeInference(unittest.TestCase):
                         return x, x != 4
             """,
             "f: (fun int -> (collection 'a -> int) -> (tuple int -> bool))")
+
+    def test_unop(self):
+        # FIXME : int is also a possible input but multi function is not handled
+        # yet.
+        self.check("""
+                   def f(x):
+                       return ~x, -x, not x, +x
+                   """,
+                   "f: (fun bool -> (tuple int -> bool -> bool -> bool))")
 
 
 
