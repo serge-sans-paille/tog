@@ -595,6 +595,16 @@ def analyse(node, env, non_generic=None):
     elif isinstance(node, (gast.UAdd, gast.USub)):
         return MultiType([Function([Float], Float), Function([Integer], Float),
                           Function([Bool], Bool)])
+    elif isinstance(node, gast.BoolOp):
+        op_type = analyse(node.op, env, non_generic)
+        init_type = analyse(node.values[0], env, non_generic)
+        for n in node.values[1:]:
+            unify(Function([init_type, analyse(n, env, non_generic)], init_type), op_type)
+        return init_type
+    elif isinstance(node, (gast.And, gast.Or)):
+        x_type = TypeVariable()
+        y_type = TypeVariable()
+        return Function([x_type, y_type], UnionType([x_type, y_type]))
 
     raise RuntimeError("Unhandled syntax node {0}".format(type(node)))
 
@@ -1320,6 +1330,15 @@ class TestTypeInference(unittest.TestCase):
                        return ~x, -x, not x, +x
                    """,
                    "f: (fun bool -> (tuple int -> bool -> bool -> bool))")
+
+    def test_boolop(self):
+        self.check("""
+                   def f(x, y):
+                       while x < 2 and x > 0:
+                           x += 1
+                       return (x and (x or 1) and y) or y
+                   """,
+                   "f: (fun int -> int -> int)")
 
 
 
