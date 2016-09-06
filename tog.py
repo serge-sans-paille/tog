@@ -5,7 +5,6 @@ import itertools
 from collections import defaultdict
 import unittest
 from textwrap import dedent
-from copy import deepcopy
 
 class InferenceError(Exception):
     """Raised if the type inference algorithm cannot infer types successfully"""
@@ -165,16 +164,9 @@ class MultiType(object):
 
     def __init__(self, types):
         self.types = types
-        self.instance = None
 
     def __str__(self):
-        if self.instance:
-            return str(self.instance)
         return '(' + ' ; '.join(sorted(map(str, self.types))) + ')'
-
-    def copy(self):
-        assert self.instance is None
-        return MultiType([fresh(t, {}) for t in self.types])
 
 # Basic types are constructed with a nullary type constructor
 Integer = TypeOperator("int", [])  # Basic integer
@@ -295,7 +287,7 @@ def analyse(node, env, non_generic=None):
         return Function(arg_types, result_type)
     elif isinstance(node, gast.IfExp):
         test_type = analyse(node.test, env, non_generic)
-        unify(Function([test_type], Bool), copy(builtins['bool']))
+        unify(Function([test_type], Bool), clone(builtins['bool']))
         body_type = analyse(node.body, env, non_generic)
         orelse_type = analyse(node.orelse, env, non_generic)
         return merge_type(body_type, orelse_type)
@@ -422,7 +414,7 @@ def analyse(node, env, non_generic=None):
                 target = alias.name
             else:
                 target = alias.asname
-            env[target] = copy(Modules[alias.name])
+            env[target] = clone(Modules[alias.name])
         return env
     elif isinstance(node, gast.ImportFrom):
         if node.module not in Modules:
@@ -434,7 +426,7 @@ def analyse(node, env, non_generic=None):
                 target = alias.name
             else:
                 target = alias.asname
-            env[target] = copy(Modules[node.module][alias.name])
+            env[target] = clone(Modules[node.module][alias.name])
         return env
     elif isinstance(node, gast.FunctionDef):
         old_type = env[node.name]
@@ -533,7 +525,7 @@ def analyse(node, env, non_generic=None):
         return env
     elif isinstance(node, gast.If):
         test_type = analyse(node.test, env, non_generic)
-        unify(Function([test_type], Bool), copy(builtins['bool']))
+        unify(Function([test_type], Bool), clone(builtins['bool']))
 
         body_env = env.copy()
         body_non_generic = non_generic.copy()
@@ -563,7 +555,7 @@ def analyse(node, env, non_generic=None):
         return env
     elif isinstance(node, gast.While):
         test_type = analyse(node.test, env, non_generic)
-        unify(Function([test_type], Bool), copy(builtins['bool']))
+        unify(Function([test_type], Bool), clone(builtins['bool']))
 
         analyse_body(node.body, env, non_generic)
         analyse_body(node.orelse, env, non_generic)
@@ -606,15 +598,12 @@ def get_type(name, env, non_generic):
     """
     if name in env:
         if isinstance(env[name], MultiType):
-            return env[name].copy()
+            return clone(env[name])
         return fresh(env[name], non_generic)
     elif is_integer_literal(name):
         return Integer
     else:
         raise RuntimeError("Undefined symbol {0}".format(name))
-
-def copy(x):
-    return getattr(x, 'copy', lambda :x)()
 
 def fresh(t, non_generic):
     """Makes a copy of a type expression.
@@ -654,6 +643,12 @@ def fresh(t, non_generic):
             assert False, "missing freshrec case {}".format(type(p))
 
     return freshrec(t)
+
+def clone(t):
+    if isinstance(t, MultiType):
+        return MultiType([clone(tp) for tp in t.types])
+    else:
+        return fresh(t, {})
 
 def unify(t1, t2):
     """Unify the two types t1 and t2.
@@ -712,12 +707,10 @@ def unify(t1, t2):
                 t_clone = fresh(t, {})
                 unify(t_clone, b)
                 return
-        raise RuntimeError("Not unified {} and {}, no overload found".format(type(a), type(b)))
+        raise InferenceError("Not unified {} and {}, no overload found".format(type(a), type(b)))
     elif isinstance(b, MultiType):
         return unify(b, a)
     elif isinstance(a, MultiType):
-        if a.instance:
-            return unify(a.instance, b)
         types = []
         for t in a.types:
             try:
@@ -732,13 +725,24 @@ def unify(t1, t2):
                 a.instance = types[0]
                 unify(a.instance, b)
             else:
-                new_types = [MultiType([t.types[i] for t in types]) for i in range(len(b.types))]
-                assert isinstance(b, TypeOperator)
-                a.instance = TypeOperator(b.name, new_types)
-                a.instance.__class__ = b.__class__
-                unify(a.instance, b)
+                # too many overloads are found, so extract as many information as we can, and leave the remaining
+                # over-approximated
+                def try_unify(t, ts):
+                    if isinstance(t, TypeVariable):
+                        return
+                    if any(isinstance(tp, TypeVariable) for tp in ts):
+                        return
+                    for i, tt in enumerate(t.types):
+                        its = [t.types[i] for t in ts]
+                        it0 = its[0]
+                        it0ntypes = len(it0.types)
+                        if all(((it.name == it0.name) and (len(it.types) == it0ntypes)) for it in its):
+                            ntypes = [TypeVariable() for _ in range(it0ntypes)]
+                            unify(tt, TypeOperator(it0.name, ntypes))
+                            try_unify(tt, its)
+                try_unify(b, types)
         else:
-            raise RuntimeError("Not unified {} and {}, no overload found".format(type(a), type(b)))
+            raise InferenceError("Not unified {} and {}, no overload found".format(type(a), type(b)))
     else:
         raise RuntimeError("Not unified {} and {}".format(type(a), type(b)))
 
@@ -779,7 +783,7 @@ def prune(t):
     Returns:
         An uninstantiated TypeVariable or a TypeOperator
     """
-    if isinstance(t, (TypeVariable, MultiType)):
+    if isinstance(t, TypeVariable):
         if t.instance is not None:
             t.instance = prune(t.instance)
             return t.instance
@@ -874,19 +878,23 @@ ZipFunction = make_zip_function(4)
 
 def make_map_function(n):
     candidates = []
-    for arity in range(n):
-        f_arg_types0 = [TypeVariable() for _ in range(arity - 1)]
+    for arity in range(1, n):
+        f_arg_types0 = [TypeVariable() for _ in range(arity)]
         f_ret_type = TypeVariable()
         arg_types0 = [Collection(TypeVariable(), TypeVariable(), f_arg_type) for f_arg_type in f_arg_types0]
 
-        f_arg_types1 = [TypeVariable() for _ in range(arity - 1)]
+        f_arg_types1 = [TypeVariable() for _ in range(arity)]
         arg_types1 = [Collection(TypeVariable(), TypeVariable(), f_arg_type) for f_arg_type in f_arg_types1]
-        candidates.extend( [Function([Function(arg_types0, f_ret_type)] + arg_types0, List(f_ret_type)),
-                Function([NoneType] + arg_types1, List(Tuple(f_arg_types1)))
+        if len(f_arg_types1) == 1:
+            make_tuple = lambda x:x[0]
+        else:
+            make_tuple = Tuple
+        candidates.extend( [Function([Function(f_arg_types0, f_ret_type)] + arg_types0, List(f_ret_type)),
+                Function([NoneType] + f_arg_types1, List(make_tuple(f_arg_types1)))
                ])
     return MultiType(candidates)
 
-MapFunction = make_map_function(4)
+MapFunction = make_map_function(3)
 
 
 def make_partial_function(n):
@@ -956,13 +964,11 @@ _Modules = {
     },
 }
 
-builtins, Attrs, Modules = None, None, None
+_Modules['__builtin__'] = _Builtins.copy()
+
+builtins, Attrs, Modules = _Builtins, _Attrs, _Modules
 def reset():
     # FIMXE: this prevents some side effect on the tables, better find where it comes from
-    global builtins, Attrs, Modules
-    builtins = deepcopy(_Builtins)
-    Attrs = deepcopy(_Attrs)
-    Modules = deepcopy(_Modules)
     TypeVariable.reset()
 
 reset()
@@ -972,7 +978,7 @@ class TestTypeInference(unittest.TestCase):
     def check(self, code, ref):
         reset()
         node = gast.parse(dedent(code))
-        env = deepcopy(builtins)
+        env = builtins.copy()
         types = analyse(node, env)
         out = ''
         new_env = {k: v for k, v in env.items() if len(k) == 1}
@@ -1150,11 +1156,11 @@ class TestTypeInference(unittest.TestCase):
         self.check('def f(): return',
                    "f: (fun none)")
 
-#    def test_return_opt(self):
-#        self.check('def f(x):\n if x: return x\n else: return',
-#                   "f: (fun 'a -> ('a | none))")
-#
-#
+##    def test_return_opt(self):
+##        self.check('def f(x):\n if x: return x\n else: return',
+##                   "f: (fun 'a -> ('a | none))")
+##
+##
     def test_string_iteration(self):
         self.check('def f(): a = "er"; return [x for x in a]',
                    'f: (fun (list str))')
@@ -1176,12 +1182,15 @@ class TestTypeInference(unittest.TestCase):
                    "f: (fun (collection 'a -> 'b) -> (collection 'c -> 'd) -> (list (tuple 'b -> 'd)))")
 
     def test_map(self):
-        self.check('def f(x, y): return map(None, x, y), map(len, x)',
-                   "f: (fun (collection 'a -> 'b) -> (collection 'c -> 'd) -> (tuple (list (tuple 'b -> 'd)) -> (list int)))")
+        self.check('def f(x): return map(None, x, map(len, x))',
+                   "f: (fun (collection 'a -> (collection 'b -> 'c)) -> (list (tuple (collection 'a -> (collection 'b -> 'c)) -> (list int))))")
 
     def test_union_type(self):
         self.check('def f(x, y): return map(x, y)',
-                   "f: (fun (fun (collection 'a -> 'b) -> 'c) -> (collection 'a -> 'b) -> (list 'c))")
+                   # WARN: over approximation
+                   "f: (fun 'e -> 'f -> (collection 'g -> 'h -> 'i))")
+                   # BEST:
+                   #f: ((fun (fun 'a -> 'b) -> (collection 'c -> 'a) -> (list 'b)) ; (fun none -> 'd -> (list 'd)))")
 
     def test_import_from(self):
         self.check('''
@@ -1322,7 +1331,25 @@ class TestTypeInference(unittest.TestCase):
                 else:
                     return 1
                 ''',
-                "f: (fun (collection (tuple 'a -> len) -> 'b -> 'c) -> int)")
+                # WARN: this is an over-approximation
+                "f: (fun (collection 'a -> 'b) -> int)")
+                # Best:
+                #f: (fun (collection (tuple 'a -> len) -> 'b -> 'c) -> int)
+
+    def test_multimap(self):
+        self.check('''
+            def f(x, y):
+                return len(map(x, y))
+                ''',
+                   # WARN: over approximation
+                   "f: (fun 'e -> 'f -> int)")
+                   # BEST
+                   #f: ((fun (fun 'a -> 'b) -> (collection 'c -> 'a) -> int) ; (fun none -> 'd -> int))
+
+    def test_map_from_builtin(self):
+        self.check('def f(x): from __builtin__ import map; return map(None, x, map(len, x))',
+                   "f: (fun (collection 'a -> (collection 'b -> 'c)) -> (list (tuple (collection 'a -> (collection 'b -> 'c)) -> (list int))))")
+
 
 
 if __name__ == '__main__':
