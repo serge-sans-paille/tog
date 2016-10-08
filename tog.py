@@ -428,11 +428,15 @@ def analyse(node, env, non_generic=None):
         return NumpyBinOp()
     elif isinstance(node, gast.Sub):
         return NumpyBinOp()
-    elif isinstance(node, gast.USub):
+    elif isinstance(node, (gast.USub, gast.UAdd)):
         return NumpyUnaryOp()
-    elif isinstance(node, gast.Gt):
+    elif isinstance(node, (gast.Eq, gast.NotEq, gast.Lt, gast.LtE, gast.Gt,
+                           gast.GtE, gast.Is, gast.IsNot)):
         var = TypeVariable()
         return Function([var, var], Bool())
+    elif isinstance(node, (gast.In, gast.NotIn)):
+        var = TypeVariable()
+        return Function([var, Collection(TypeVariable(), TypeVariable(), var)], Bool())
     elif isinstance(node, gast.Add):
         return MakeAddOp.instance
     elif isinstance(node, gast.Mult):
@@ -732,6 +736,27 @@ def analyse(node, env, non_generic=None):
             analyse(node.msg, env, non_generic)
         analyse(node.test, env, non_generic)
         return env
+    elif isinstance(node, gast.UnaryOp):
+        operand_type = analyse(node.operand, env, non_generic)
+        return_type = TypeVariable()
+        op_type = analyse(node.op, env, non_generic)
+        unify(Function([operand_type], return_type), op_type)
+        return return_type
+    elif isinstance(node, gast.Invert):
+        return MultiType([Function([Bool()], Integer()),
+                          Function([Integer()], Integer())])
+    elif isinstance(node, gast.Not):
+        return builtins['bool']
+    elif isinstance(node, gast.BoolOp):
+        op_type = analyse(node.op, env, non_generic)
+        init_type = analyse(node.values[0], env, non_generic)
+        for n in node.values[1:]:
+            unify(Function([init_type, analyse(n, env, non_generic)], init_type), op_type)
+        return init_type
+    elif isinstance(node, (gast.And, gast.Or)):
+        x_type = TypeVariable()
+        return Function([x_type, x_type], x_type)
+
     raise RuntimeError("Unhandled syntax node {0}".format(type(node)))
 
 def get_type(name, env, non_generic):
@@ -1109,6 +1134,7 @@ _Builtins = {
         Function([Integer(), Integer()], Generator(Integer())),
         Function([Integer(), Integer(), Integer()], Generator(Integer())),
     ]),
+    'True': Bool,
 }
 
 _Attrs = {
@@ -1561,6 +1587,39 @@ class TestTypeInference(unittest.TestCase):
         '''
         with self.assertRaises(InferenceError):
             self.check(code, "any")
+
+    def test_compare(self):
+        self.check(
+            """
+                def f(x, l):
+                    if 2 <= x < 6:
+                        return x, x == 3
+                    elif 2 > x >= 0:
+                        return x, x is 5
+                    elif x in l:
+                        return x, x is not 6
+                    elif x not in l:
+                        return x, x is not 6
+                    else:
+                        return x, x != 4
+            """,
+            "f: (fun int -> (collection 'a -> int) -> (tuple int -> bool))")
+
+    def test_unop(self):
+        self.check("""
+                   def f(x):
+                       return ~x, -x, not x, +x
+                   """,
+                   "f: (fun scalar 'a -> (tuple scalar 'b -> scalar 'c -> bool -> scalar 'd))")
+
+    def test_boolop(self):
+        self.check("""
+                   def f(x, y):
+                       while x < 2 and x > 0:
+                           x += 1
+                       return (x and (x or 1) and y) or y
+                   """,
+                   "f: (fun int -> int -> int)")
 
 
 
