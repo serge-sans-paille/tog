@@ -111,7 +111,7 @@ class Collection(TypeOperator):
                         return nt2, 0
                 t, n = rec(self)
                 if isinstance(t, TypeVariable):
-                    return 'ndarray ' + str(t)
+                    return '(ndarray ' + str(t) + ')'
                 else:
                     return '({}d array {})'.format(n, t)
             if type_trait == 'gen':
@@ -181,10 +181,12 @@ def Integer():
 def Bool():
     return Collection(Traits([ArrayTrait, NoLenTrait, NoSliceTrait]), InvalidKey, Scalar('bool'))
 
+def DType():
+    return Collection(Traits([ArrayTrait, NoLenTrait, NoSliceTrait]), InvalidKey, Scalar())
+
 def Function(from_types, to_type):
     """A binary type constructor which builds function types"""
     return TypeOperator('fun', list(from_types) + [to_type])
-
 
 def Tuple(of_types):
     return TypeOperator("tuple", of_types)
@@ -221,6 +223,22 @@ class MultiType(object):
 
     def __str__(self):
         return '(' + ' ; '.join(sorted(map(str, self.types))) + ')'
+
+class MakeNumpyUnaryOp(object):
+    types = []
+    types.append(Function([Integer()], Integer()))
+    types.append(Function([Float()], Float()))
+    n = 4
+    for i in range(n):
+        types.append(Function([Array(Integer(), i)], Array(Integer(),i)))
+        types.append(Function([Array(Float(), i)], Array(Float(),i)))
+    instance = MultiType(types)
+
+    def __call__(self):
+        return MakeNumpyUnaryOp.instance
+
+NumpyUnaryOp = MakeNumpyUnaryOp()
+
 class MakeNumpyBinOp(object):
     types = []
     types.append(Function([Integer(), Integer()], Integer()))
@@ -393,6 +411,12 @@ def analyse(node, env, non_generic=None):
         body_type = analyse(node.body, env, non_generic)
         orelse_type = analyse(node.orelse, env, non_generic)
         return merge_unify(body_type, orelse_type)
+    elif isinstance(node, gast.UnaryOp):
+        operand_type = analyse(node.operand, env, non_generic)
+        op_type = analyse(node.op, env, non_generic)
+        result_type = TypeVariable()
+        unify(Function([operand_type], result_type), op_type)
+        return result_type
     elif isinstance(node, gast.BinOp):
         left_type = analyse(node.left, env, non_generic)
         op_type = analyse(node.op, env, non_generic)
@@ -404,6 +428,8 @@ def analyse(node, env, non_generic=None):
         return NumpyBinOp()
     elif isinstance(node, gast.Sub):
         return NumpyBinOp()
+    elif isinstance(node, gast.USub):
+        return NumpyUnaryOp()
     elif isinstance(node, gast.Gt):
         var = TypeVariable()
         return Function([var, var], Bool())
@@ -503,7 +529,14 @@ def analyse(node, env, non_generic=None):
         value_type = analyse(node.value, env, non_generic)
         slice_type = analyse(node.slice, env, non_generic)
         if isinstance(node.slice, gast.Index):
-            unify(Collection(Traits([TypeVariable(), TypeVariable(), TypeVariable()]), slice_type, new_type), value_type)
+            st = prune(slice_type)
+            if isinstance(st, TypeOperator) and st.name == 'tuple':
+                nbindex = len(st.types)
+                dtype = TypeVariable()
+                unify(Array(dtype, nbindex) , value_type)
+                new_type = dtype
+            else:
+                unify(Collection(Traits([TypeVariable(), TypeVariable(), TypeVariable()]), slice_type, new_type), value_type)
         elif isinstance(node.slice, gast.Slice):
             unify(Collection(Traits([TypeVariable(), TypeVariable(), SliceTrait]), Integer(), TypeVariable()), value_type)
             new_type = value_type
@@ -521,10 +554,9 @@ def analyse(node, env, non_generic=None):
             return value_type[node.attr]
         elif node.attr in Attrs:
             result_type = TypeVariable()
-            args_type = [TypeVariable() for _ in range(len(Attrs[node.attr].types) - 2)]
-            ft = Function([value_type] + args_type, result_type)
-            unify(ft, Attrs[node.attr])
-            return Function(args_type, result_type)
+            ft = Function([value_type], result_type)
+            unify(ft, fresh(Attrs[node.attr], non_generic))
+            return result_type
         raise NotImplementedError("Unknown attribute: %s" % node.attr)
     # stmt
     elif isinstance(node, gast.Import):
@@ -754,7 +786,7 @@ def fresh(t, non_generic):
         elif isinstance(p, TypeOperator):
             return TypeOperator(p.name, [freshrec(x) for x in p.types])
         elif isinstance(p, MultiType):
-            return p
+            return MultiType([freshrec(x) for x in p.types])
         else:
             assert False, "missing freshrec case {}".format(type(p))
 
@@ -845,6 +877,9 @@ def unify(t1, t2):
                             try_unify(prune(tt), [prune(it) for it in its])
                 try_unify(b, types)
         else:
+            #print("while unifying:")
+            #print("-", str(a))
+            #print("-", str(b))
             raise InferenceError("Not unified {} and {}, no overload found".format(type(a), type(b)))
     else:
         raise RuntimeError("Not unified {} and {}".format(type(a), type(b)))
@@ -990,7 +1025,7 @@ def make_map_function(n):
         arg_types0 = [Collection(TypeVariable(), TypeVariable(), f_arg_type) for f_arg_type in f_arg_types0]
         candidates.append(Function([Function(f_arg_types0, f_ret_type)] + arg_types0, List(f_ret_type)))
 
-        arg_types1 = [Collection(TypeVariable(), TypeVariable(), f_arg_type) for _ in range(arity)]
+        arg_types1 = [Collection(TypeVariable(), TypeVariable(), TypeVariable()) for _ in range(arity)]
         candidates.append(Function([NoneType] + arg_types1, List(Tuple(arg_types1)) if arity > 1 else arg_types1[0]))
     return MultiType(candidates)
 
@@ -1032,7 +1067,7 @@ def make_numpy_sum(n):
     candidates = []
     for i in range(1, n):
         #candidates.append(Function([Array(dtype, i)], dtype))
-        dtype = Scalar()
+        dtype = DType()
         candidates.append(Function([Array(dtype, i)], dtype))
 
     return MultiType(candidates)
@@ -1041,7 +1076,20 @@ SumFunction = make_numpy_sum(4)
 
 def make_list_append():
     tv = TypeVariable()
-    return Function([List(tv), tv], NoneType)
+    return Function([List(tv)], Function([tv], NoneType))
+
+def make_array_shape(n):
+    candidates = []
+    for i in  range(1, n):
+        candidates.append(Function([Array(DType(), i)], Tuple([Integer() for _ in range(i)])))
+    return MultiType(candidates)
+
+def make_array_dtype(n):
+    candidates = []
+    for i in  range(1, n):
+        dtype = DType()
+        candidates.append(Function([Array(dtype, i)], Function([TypeVariable()], dtype)))
+    return MultiType(candidates)
 
 _Builtins = {
     'id': Function([TypeVariable()], Integer()),
@@ -1053,13 +1101,20 @@ _Builtins = {
     'int': Function([TypeVariable()], Integer()),
     'float': Function([TypeVariable()], Float()),
     'bool': MultiType([
-                Function([Collection(Traits([TypeVariable(), LenTrait, TypeVariable()]), TypeVariable(), TypeVariable())], Bool()),
-                Function([Collection(Traits([ArrayTrait, NoLenTrait, TypeVariable()]), TypeVariable(), TypeVariable())], Bool()),
-    ])
+        Function([Collection(Traits([TypeVariable(), LenTrait, TypeVariable()]), TypeVariable(), TypeVariable())], Bool()),
+        Function([Collection(Traits([ArrayTrait, NoLenTrait, TypeVariable()]), TypeVariable(), TypeVariable())], Bool()),
+    ]),
+    'xrange': MultiType([
+        Function([Integer()], Generator(Integer())),
+        Function([Integer(), Integer()], Generator(Integer())),
+        Function([Integer(), Integer(), Integer()], Generator(Integer())),
+    ]),
 }
 
 _Attrs = {
     'append': make_list_append(),
+    'shape': make_array_shape(4),
+    'dtype': make_array_dtype(4),
 }
 
 _Modules = {
@@ -1072,6 +1127,7 @@ _Modules = {
     },
     'numpy': {
         'ones': OnesFunction ,
+        'zeros': OnesFunction ,
         'sum': SumFunction ,
     },
 }
@@ -1164,7 +1220,7 @@ class TestTypeInference(unittest.TestCase):
 
     def test_overload(self):
         self.check('def f(x, y): a, b = x * 1, y * 1.; return b, a',
-                   "f: (fun ndarray 'a -> ndarray 'b -> (tuple ndarray 'c -> ndarray 'd))")
+                   "f: (fun (ndarray 'a) -> (ndarray 'b) -> (tuple (ndarray 'c) -> (ndarray 'd)))")
 
     def test_listcomp(self):
         self.check('def f(x): return [1 for _ in x]',
@@ -1468,7 +1524,7 @@ class TestTypeInference(unittest.TestCase):
 
     def test_subscript_extslice(self):
         self.check('def f(x): return x[1:2,3]',
-                   "f: (fun ndarray 'a -> ndarray 'a)")
+                   "f: (fun (ndarray 'a) -> (ndarray 'a))")
 
     def test_subscript_extslice_twice(self):
         self.check('''
@@ -1488,7 +1544,7 @@ class TestTypeInference(unittest.TestCase):
                     t1 = (1 - x[:-1]) ** 2
                     return np.sum(t0 + t1)
                    ''',
-                   "f: (fun ndarray 'a -> scalar 'b)",)
+                   "f: (fun (ndarray 'a) -> scalar 'b)")
 
     def test_add_to_none(self):
         code = '''
@@ -1509,4 +1565,20 @@ class TestTypeInference(unittest.TestCase):
 
 
 if __name__ == '__main__':
-    unittest.main()
+    import argparse
+    parser = argparse.ArgumentParser(
+        description='type a .py program')
+    parser.add_argument(
+        'file', type=argparse.FileType(),
+        help='path to input Python file')
+    args = parser.parse_args()
+
+    node = gast.parse(args.file.read())
+    env = builtins.copy()
+    types = analyse(node, env)
+    new_env = {k: v for k, v in env.items()}
+
+    out = []
+    for key, value in sorted(new_env.items()):
+        out.append('{}: {}\n'.format(key, value))
+    print("\n".join(out))
