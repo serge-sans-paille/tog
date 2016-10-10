@@ -3,6 +3,7 @@ from __future__ import print_function
 import gast
 import itertools
 from collections import defaultdict
+from functools import reduce
 import unittest
 from textwrap import dedent
 
@@ -85,7 +86,7 @@ class Collection(TypeOperator):
         t0 = prune(self.types[0])
         if isinstance(t0, TypeVariable):
             return '(collection {} -> {})'.format(self.types[1], self.types[2])
-        if isinstance(t0, TypeOperator) and t0.name == 'tuple' and all(isinstance(prune(t), TypeVariable) for t in t0.types):
+        if isinstance(t0, TypeOperator) and t0.name == 'traits' and all(isinstance(prune(t), TypeVariable) for t in t0.types):
             return '(collection {} -> {})'.format(self.types[1], self.types[2])
         t00 = prune(t0.types[0])
         if isinstance(t00, TypeOperator):
@@ -98,26 +99,40 @@ class Collection(TypeOperator):
                 return '(dict {} -> {})'.format(self.types[1], self.types[2])
             if type_trait == 'str':
                 return 'str'
+            if type_trait == 'tuple':
+                return str(t00)
             if type_trait == 'array':
                 t01 = prune(t0.types[1])
                 if isinstance(t01, TypeOperator) and t01.name == NoLenTrait.name:
                     return str(self.types[2])
                 def rec(n):
-                    nt2 = prune(n.types[2])
-                    if isinstance(nt2, Collection):
-                        t, n = rec(nt2)
-                        return t, n + 1
+                    pn = prune(n)
+                    if isinstance(pn, Collection):
+                        traits = prune(pn.types[0])
+                        # a scalar or array?
+                        if isinstance(traits, TypeVariable):
+                            return pn.types[2], 0
+                        len_trait = prune(traits.types[1])
+                        # an array?
+                        if isinstance(len_trait, TypeOperator) and len_trait.name == LenTrait.name:
+                            t, n = rec(pn.types[2])
+                            return t, n + 1
+                        # a scalar or array?
+                        else:
+                            return pn.types[2], 0
                     else:
-                        return nt2, 0
+                        return pn, 0
                 t, n = rec(self)
                 if isinstance(t, TypeVariable):
-                    return '(ndarray ' + str(t) + ')'
+                    return '({}d+ array {})'.format(n, t)
                 else:
                     return '({}d array {})'.format(n, t)
             if type_trait == 'gen':
                 return '(gen {})'.format(self.types[2])
         return super(Collection, self).__str__()
 
+def TupleTrait(of_types):
+    return TypeOperator('tuple', of_types)
 ListTrait = TypeOperator('list', [])
 SetTrait = TypeOperator('set', [])
 DictTrait = TypeOperator('dict', [])
@@ -148,6 +163,10 @@ def Array(of_type, dim):
 def Generator(of_type):
     return Collection(Traits([GenerableTrait, NoLenTrait, NoSliceTrait]), InvalidKey, of_type)
 
+def Tuple(of_types):
+    return Collection(Traits([TupleTrait(of_types), LenTrait, SliceTrait]), Integer(), TypeVariable())
+
+
 class Scalar(TypeOperator):
     def __init__(self, types=None):
         if not isinstance(types, list):
@@ -164,11 +183,11 @@ class Scalar(TypeOperator):
         super(Scalar, self).__init__('scalar', types)
 
     def __str__(self):
-        if isinstance(self.types[0], TypeOperator):
+        if isinstance(prune(self.types[0]), TypeOperator):
             return 'float'
-        if isinstance(self.types[1], TypeOperator):
+        if isinstance(prune(self.types[1]), TypeOperator):
             return 'int'
-        if isinstance(self.types[2], TypeOperator):
+        if isinstance(prune(self.types[2]), TypeOperator):
             return 'bool'
         return 'scalar {}'.format(self.types[0].name)
 
@@ -188,13 +207,11 @@ def Function(from_types, to_type):
     """A binary type constructor which builds function types"""
     return TypeOperator('fun', list(from_types) + [to_type])
 
-def Tuple(of_types):
-    return TypeOperator("tuple", of_types)
-
 def OptionType(of_type):
     return TypeOperator("option", [of_type])
 
-Traits = Tuple
+def Traits(of_types):
+    return TypeOperator("traits", of_types)
 
 ExceptionType = TypeOperator("exception", [])
 
@@ -214,6 +231,15 @@ def is_none(t):
 def is_option_type(t):
     pt = prune(t)
     return isinstance(pt, TypeOperator) and pt.name == "option"
+
+def is_tuple_type(t):
+    pt = prune(t)
+    if isinstance(pt, TypeOperator) and pt.name == "collection":
+        st = prune(pt.types[0])
+        if isinstance(st, TypeOperator) and st.name == "traits":
+            tt = prune(st.types[0])
+            return isinstance(tt, TypeOperator) and tt.name == "tuple"
+    return False
 
 class MultiType(object):
     """A binary type constructor which builds function types"""
@@ -441,6 +467,8 @@ def analyse(node, env, non_generic=None):
         return MakeAddOp.instance
     elif isinstance(node, gast.Mult):
         return MakeNumpyBinOp.instance
+    elif isinstance(node, gast.Div):
+        return MakeNumpyBinOp.instance
     elif isinstance(node, gast.List):
         new_type = TypeVariable()
         for elt in node.elts:
@@ -534,11 +562,17 @@ def analyse(node, env, non_generic=None):
         slice_type = analyse(node.slice, env, non_generic)
         if isinstance(node.slice, gast.Index):
             st = prune(slice_type)
-            if isinstance(st, TypeOperator) and st.name == 'tuple':
-                nbindex = len(st.types)
+            if is_tuple_type(slice_type):
+                nbindex = len(prune(prune(st.types[0]).types[0]).types)
                 dtype = TypeVariable()
                 unify(Array(dtype, nbindex) , value_type)
                 new_type = dtype
+            elif isinstance(node.slice.value, gast.Num):
+                vt = prune(value_type)
+                if is_tuple_type(vt):
+                    unify(prune(prune(vt.types[0]).types[0]).types[node.slice.value.n], new_type)
+                else:
+                    unify(Collection(Traits([TypeVariable(), TypeVariable(), TypeVariable()]), slice_type, new_type), value_type)
             else:
                 unify(Collection(Traits([TypeVariable(), TypeVariable(), TypeVariable()]), slice_type, new_type), value_type)
         elif isinstance(node.slice, gast.Slice):
@@ -547,7 +581,7 @@ def analyse(node, env, non_generic=None):
         elif isinstance(node.slice, gast.ExtSlice):
             nbslice = len(node.slice.dims)
             dtype = TypeVariable()
-            unify(Array(dtype, nbslice) , value_type)
+            unify(Array(dtype, nbslice), value_type)
             new_type = Array(dtype, sum(1 for s in slice_type if s is Slice))
         else:
             raise NotImplementedError()
@@ -889,7 +923,7 @@ def unify(t1, t2):
                     if any(isinstance(tp, TypeVariable) for tp in ts):
                         return
                     for i, tt in enumerate(t.types):
-                        its = [tp.types[i] for tp in ts]
+                        its = [prune(tp.types[i]) for tp in ts]
                         if any(isinstance(it, TypeVariable) for it in its):
                             continue
                         it0 = its[0]
@@ -1069,6 +1103,19 @@ def make_partial_function(n):
 
 PartialFunction = make_partial_function(4)
 
+def make_numpy_array(n):
+    candidates = []
+
+    array_type = Array(TypeVariable(), 0)
+    candidates.append(Function([array_type], array_type))
+    for i in range(1, n):
+        dtype = DType()
+        candidates.append(Function([reduce(lambda x, y: List(x), range(i), dtype)], Array(dtype, i)))
+
+    return MultiType(candidates)
+
+ArrayFunction = make_numpy_array(4)
+
 def make_numpy_ones(n):
     candidates = []
     # with an integer as shape
@@ -1091,7 +1138,6 @@ OnesFunction = make_numpy_ones(4)
 def make_numpy_sum(n):
     candidates = []
     for i in range(1, n):
-        #candidates.append(Function([Array(dtype, i)], dtype))
         dtype = DType()
         candidates.append(Function([Array(dtype, i)], dtype))
 
@@ -1116,6 +1162,36 @@ def make_array_dtype(n):
         candidates.append(Function([Array(dtype, i)], Function([TypeVariable()], dtype)))
     return MultiType(candidates)
 
+def make_array_reshape(n):
+    candidates = []
+    for i in  range(1, n):
+        for j in  range(1, n):
+            dtype = DType()
+            candidates.append(Function([Array(dtype, i)], Function([Tuple([Integer() for _ in range(j)])], Array(dtype, j))))
+    return MultiType(candidates)
+
+def make_numpy_arange():
+    candidates = []
+    dtype = DType()
+    candidates.append(Function([dtype], Array(dtype, 1)))
+    dtype = DType()
+    candidates.append(Function([dtype, dtype], Array(dtype, 1)))
+    dtype = DType()
+    candidates.append(Function([dtype, dtype, dtype], Array(dtype, 1)))
+    dtype0 = DType()
+    dtype1 = DType()
+    candidates.append(Function([dtype0, dtype0, dtype0, Function([TypeVariable()], dtype1)], Array(dtype1, 1)))
+    return MultiType(candidates)
+
+ArangeFunction = make_numpy_arange()
+
+def make_list():
+    value_type = Collection(TypeVariable(), TypeVariable(), TypeVariable())
+    return MultiType([
+        Function([Collection(Traits([TypeVariable(), TypeVariable(), TypeVariable()]), TypeVariable(), value_type)], List(value_type)),
+        Function([], List(TypeVariable())),
+    ])
+
 _Builtins = {
     'id': Function([TypeVariable()], Integer()),
     'len': Function([Collection(Traits([TypeVariable(), LenTrait, TypeVariable()]), TypeVariable(), TypeVariable())], Integer()),
@@ -1134,13 +1210,21 @@ _Builtins = {
         Function([Integer(), Integer()], Generator(Integer())),
         Function([Integer(), Integer(), Integer()], Generator(Integer())),
     ]),
-    'True': Bool,
+    'range': MultiType([
+        Function([Integer()], List(Integer())),
+        Function([Integer(), Integer()], List(Integer())),
+        Function([Integer(), Integer(), Integer()], List(Integer())),
+    ]),
+    'list': make_list(),
+    'True': Bool(),
+    'False': Bool(),
 }
 
 _Attrs = {
     'append': make_list_append(),
     'shape': make_array_shape(4),
     'dtype': make_array_dtype(4),
+    'reshape': make_array_reshape(4),
 }
 
 _Modules = {
@@ -1152,6 +1236,8 @@ _Modules = {
         'sin': Function([Float()], Float()),
     },
     'numpy': {
+        'array': ArrayFunction ,
+        'arange': ArangeFunction ,
         'ones': OnesFunction ,
         'zeros': OnesFunction ,
         'sum': SumFunction ,
@@ -1246,7 +1332,7 @@ class TestTypeInference(unittest.TestCase):
 
     def test_overload(self):
         self.check('def f(x, y): a, b = x * 1, y * 1.; return b, a',
-                   "f: (fun (ndarray 'a) -> (ndarray 'b) -> (tuple (ndarray 'c) -> (ndarray 'd)))")
+                   "f: (fun (0d+ array 'a) -> (0d+ array 'b) -> (tuple (0d+ array 'c) -> (0d+ array 'd)))")
 
     def test_listcomp(self):
         self.check('def f(x): return [1 for _ in x]',
@@ -1364,7 +1450,7 @@ class TestTypeInference(unittest.TestCase):
 
     def test_len(self):
         self.check('def f(x): a = "er"; return len(a), len(x)',
-                   "f: (fun (collection (tuple 'a -> len -> 'b) -> 'c -> 'd) -> (tuple int -> int))"
+                   "f: (fun (collection (traits 'a -> len -> 'b) -> 'c -> 'd) -> (tuple int -> int))"
                    )
 
     def test_zip(self):
@@ -1521,7 +1607,7 @@ class TestTypeInference(unittest.TestCase):
                 else:
                     return 1
                 ''',
-                "f: (fun (collection (tuple 'a -> len -> 'b) -> 'c -> 'd) -> int)")
+                "f: (fun (collection (traits 'a -> len -> 'b) -> 'c -> 'd) -> int)")
 
     def test_multimap(self):
         self.check('''
@@ -1546,11 +1632,11 @@ class TestTypeInference(unittest.TestCase):
 
     def test_subscript_slice(self):
         self.check('def f(x): x[0] = 1; return x[1:2]',
-                   "f: (fun (collection (tuple 'a -> 'b -> slice) -> int -> int) -> (collection (tuple 'a -> 'b -> slice) -> int -> int))")
+                   "f: (fun (collection (traits 'a -> 'b -> slice) -> int -> int) -> (collection (traits 'a -> 'b -> slice) -> int -> int))")
 
     def test_subscript_extslice(self):
         self.check('def f(x): return x[1:2,3]',
-                   "f: (fun (ndarray 'a) -> (ndarray 'a))")
+                   "f: (fun (2d+ array 'a) -> (1d+ array 'a))")
 
     def test_subscript_extslice_twice(self):
         self.check('''
@@ -1570,7 +1656,7 @@ class TestTypeInference(unittest.TestCase):
                     t1 = (1 - x[:-1]) ** 2
                     return np.sum(t0 + t1)
                    ''',
-                   "f: (fun (ndarray 'a) -> scalar 'b)")
+                   "f: (fun (1d+ array 'a) -> scalar 'b)")
 
     def test_add_to_none(self):
         code = '''
@@ -1610,7 +1696,7 @@ class TestTypeInference(unittest.TestCase):
                    def f(x):
                        return ~x, -x, not x, +x
                    """,
-                   "f: (fun scalar 'a -> (tuple scalar 'b -> scalar 'c -> bool -> scalar 'd))")
+                   "f: (fun int -> (tuple int -> scalar 'a -> bool -> scalar 'b))")
 
     def test_boolop(self):
         self.check("""
@@ -1620,6 +1706,35 @@ class TestTypeInference(unittest.TestCase):
                        return (x and (x or 1) and y) or y
                    """,
                    "f: (fun int -> int -> int)")
+
+    def test_numpy_array_0(self):
+        self.check("""
+                   def f():
+                     from numpy import array
+                     return array([[1],[1]])
+                   """,
+                   "f: (fun (2d array int))")
+
+    def test_numpy_array_1(self):
+        self.check("""
+                   def f():
+                     from numpy import array, ones
+                     return array(ones(1))
+                   """,
+                   "f: (fun (1d array float))")
+
+    def test_tuple_indexing(self):
+        self.check('def f(x): a = (x, 1, 2) ; return a[0], a[2]',
+                   "f: (fun 'a -> (tuple 'a -> int))")
+
+    def test_collection_inferring(self):
+        self.check('def f(x): return x[0]',
+                   "f: (fun (collection int -> 'a) -> 'a)")
+
+    def test_builtin_list(self):
+        self.check('def f(x): return list([1]), list({"1"}), list()',
+                   "f: (fun 'a -> (tuple (list int) -> (list str) -> (list 'b)))")
+
 
 
 
@@ -1639,5 +1754,6 @@ if __name__ == '__main__':
 
     out = []
     for key, value in sorted(new_env.items()):
-        out.append('{}: {}\n'.format(key, value))
+        if key not in builtins:
+            out.append('{}: {}\n'.format(key, value))
     print("\n".join(out))
