@@ -589,6 +589,8 @@ def analyse(node, env, non_generic=None):
     elif isinstance(node, gast.Attribute):
         value_type = analyse(node.value, env, non_generic)
         if isinstance(value_type, dict):  # that's an import
+            if node.attr not in value_type:
+                raise NotImplementedError("Unknown identifier: %s" % node.attr)
             return value_type[node.attr]
         elif node.attr in Attrs:
             result_type = TypeVariable()
@@ -1232,8 +1234,11 @@ _Modules = {
         'partial': PartialFunction,
     },
     'math': {
+        'atan2': Function([Float(), Float()], Float()),
         'cos': Function([Float()], Float()),
+        'pi': Float(),
         'sin': Function([Float()], Float()),
+        'sqrt': Function([Float()], Float()),
     },
     'numpy': {
         'array': ArrayFunction ,
@@ -1241,6 +1246,13 @@ _Modules = {
         'ones': OnesFunction ,
         'zeros': OnesFunction ,
         'sum': SumFunction ,
+        'cos': NumpyUnaryOp(),
+        'sin': NumpyUnaryOp(),
+        'sqrt': NumpyUnaryOp(),
+        'arctan2': NumpyBinOp(),
+    },
+    'random': {
+        'random': Function([], Float()),
     },
 }
 
